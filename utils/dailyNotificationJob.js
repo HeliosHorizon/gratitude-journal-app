@@ -318,7 +318,7 @@ export const startDailyJob = () => {
   global._dailyGratitudeJobStarted = true;
 
   // Runs every day at 4:05 PM server time
-  cron.schedule("32 15 * * *", async () => {
+  cron.schedule("12 16 * * *", async () => {
     try {
       console.log("⏰ Running daily gratitude notification job...");
 
