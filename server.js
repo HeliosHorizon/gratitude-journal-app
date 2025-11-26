@@ -7,7 +7,7 @@ import cors from "cors";
 import userRoutes from "./routes/user.js";
 import entryRoutes from "./routes/entries.js";
 import summaryRoutes from "./routes/summary.js";
-// import tasksRouter from "./routes/tasks.js"; // uptime helper route
+import tasksRouter from "./routes/tasks.js"; // uptime helper route
 
 
 // NEW IMPORTS for FCM + scheduler
@@ -20,7 +20,7 @@ const app = express();
 
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
-// app.use("/tasks", tasksRouter);
+app.use("/tasks", tasksRouter);
 
 // Middleware
 app.use(cors());
