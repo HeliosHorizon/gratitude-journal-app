@@ -2,7 +2,7 @@
 import cron from "node-cron";
 import User from "../models/User.js";
 import rawAdmin, { getMessaging } from "./firebaseAdmin.js"; // adapt path if needed
-import { sendViaHttpV1 } from "./fcmHttpV1.js"; 
+import { sendViaHttpV1 } from "./fcmHttpV1.js";
 
 const admin = (rawAdmin && rawAdmin.default) ? rawAdmin.default : rawAdmin;
 
@@ -310,6 +310,96 @@ const processHttpV1ResultsAndCleanup = async (results) => {
   }
 };
 
+/**
+ * Runs the daily notification job once.
+ * Exported so you can call it from a trigger endpoint (POST /tasks/run-daily) or from the cron scheduler below.
+ */
+export const runDailyJobOnce = async () => {
+  try {
+    console.log("⏰ Running daily gratitude notification job (runDailyJobOnce)...");
+
+    const users = await User.find({ fcmToken: { $ne: null } }).lean();
+    if (!users || users.length === 0) {
+      console.log("❌ No users with tokens. Skipping send.");
+      return { sent: 0 };
+    }
+
+    // Support cases where fcmToken is a string or an array on the user document.
+    const tokensRaw = users.flatMap((u) => {
+      if (!u.fcmToken) return [];
+      if (Array.isArray(u.fcmToken)) return u.fcmToken;
+      return [u.fcmToken];
+    });
+
+    // Dedupe and filter falsy
+    const tokens = [...new Set(tokensRaw.filter(Boolean))];
+
+    if (tokens.length === 0) {
+      console.log("❌ No valid tokens after filtering. Skipping.");
+      return { sent: 0 };
+    }
+
+    const randomMessage = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
+    const title = "Daily Gratitude Reminder";
+    const body = randomMessage;
+
+    // If admin.messaging has a high-level send, use it; otherwise use HTTP v1
+    const messagingAvailable = admin && typeof admin.messaging === "function";
+    const messaging = messagingAvailable ? admin.messaging() : null;
+    const hasMulticast = messaging && typeof messaging.sendMulticast === "function";
+    const hasSendAll = messaging && typeof messaging.sendAll === "function";
+
+    let totalSent = 0;
+
+    for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
+      const batch = tokens.slice(i, i + BATCH_SIZE);
+
+      if (hasMulticast) {
+        try {
+          const response = await sendWithAdminMulticast(messaging, batch, title, body);
+          await processAdminResponseAndCleanup(response, batch);
+          // estimate sent count: successful responses in response.responses
+          if (Array.isArray(response.responses)) {
+            const succ = response.responses.filter(r => r.success).length;
+            totalSent += succ;
+          } else if (Array.isArray(response.results)) {
+            const succ = response.results.filter(r => !r.error).length;
+            totalSent += succ;
+          } else {
+            // fallback: assume whole batch attempted
+            totalSent += batch.length;
+          }
+          console.log(`Admin sendMulticast batch processed: ${batch.length} tokens`);
+        } catch (err) {
+          console.error("Error sending multicast batch via admin SDK:", err);
+        }
+      } else {
+        // fallback: HTTP v1
+        try {
+          console.log("Using HTTP v1 fallback to send messages for this batch");
+          const results = await sendViaHttpV1(batch, title, body);
+          await processHttpV1ResultsAndCleanup(results);
+          const succ = results.filter(r => r.ok).length;
+          totalSent += succ;
+          console.log(`HTTP v1 batch processed: ${batch.length} tokens, ${succ} succeeded`);
+        } catch (err) {
+          console.error("Error sending batch via HTTP v1 fallback:", err);
+        }
+      }
+    }
+
+    console.log(`📨 Daily notifications job completed. Approx sent: ${totalSent}`);
+    return { sent: totalSent };
+  } catch (err) {
+    console.error("❌ Error in runDailyJobOnce:", err);
+    throw err;
+  }
+};
+
+/**
+ * Keeps existing cron scheduler for backwards compatibility.
+ * If you prefer to rely on an external trigger, you can stop calling startDailyJob().
+ */
 export const startDailyJob = () => {
   if (global._dailyGratitudeJobStarted) {
     console.log("⏰ Daily notification scheduler already started (skipping duplicate start)");
@@ -317,53 +407,20 @@ export const startDailyJob = () => {
   }
   global._dailyGratitudeJobStarted = true;
 
-  // Runs every day
-
-  cron.schedule("01 11 * * *", async () => {
+  // Runs every day at the configured cron time (server timezone by default)
+  // NOTE: Update this cron expression or add timezone option if you need a specific tz.
+  cron.schedule("41 11 * * *", async () => {
     try {
-      console.log("⏰ Running daily gratitude notification job...");
-
-      const users = await User.find({ fcmToken: { $ne: null } }).lean();
-      if (!users || users.length === 0) {
-        console.log("❌ No users with tokens. Skipping send.");
-        return;
-      }
-
-      const tokens = [...new Set(users.map((u) => u.fcmToken).filter(Boolean))];
-      if (tokens.length === 0) {
-        console.log("❌ No valid tokens after filtering. Skipping.");
-        return;
-      }
-
-      const randomMessage = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
-      const title = "Daily Gratitude Reminder";
-      const body = randomMessage;
-
-      // If admin.messaging has a high-level send, use it; otherwise use HTTP v1
-      const messagingAvailable = admin && typeof admin.messaging === "function";
-      const messaging = messagingAvailable ? admin.messaging() : null;
-      const hasMulticast = messaging && typeof messaging.sendMulticast === "function";
-      const hasSendAll = messaging && typeof messaging.sendAll === "function";
-
-      for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
-        const batch = tokens.slice(i, i + BATCH_SIZE);
-
-        if (hasMulticast) {
-          const response = await sendWithAdminMulticast(messaging, batch, title, body);
-          await processAdminResponseAndCleanup(response, batch);
-          console.log(`Admin sendMulticast batch processed`);
-        } else {
-          // fallback: HTTP v1
-          console.log("Using HTTP v1 fallback to send messages for this batch");
-          const results = await sendViaHttpV1(batch, title, body);
-          await processHttpV1ResultsAndCleanup(results);
-        }
-      }
-
-      console.log("📨 Daily notifications job completed.");
+      await runDailyJobOnce();
     } catch (err) {
-      console.error("❌ Error in daily notification job:", err);
+      console.error("❌ Error while running cron-driven daily job:", err);
     }
   });
 
+  console.log("⏰ startDailyJob scheduled (cron active).");
+};
+
+export default {
+  startDailyJob,
+  runDailyJobOnce
 };

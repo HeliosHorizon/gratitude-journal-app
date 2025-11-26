@@ -7,14 +7,18 @@ import cors from "cors";
 import userRoutes from "./routes/user.js";
 import entryRoutes from "./routes/entries.js";
 import summaryRoutes from "./routes/summary.js";
+import tasksRouter from "./routes/tasks.js"; // uptime helper route
 
-// 🔥 NEW IMPORTS for FCM + scheduler
+
+// NEW IMPORTS for FCM + scheduler
 import "./utils/firebaseAdmin.js";       // initialize firebase admin
 import { startDailyJob } from "./utils/dailyNotificationJob.js";
 
 
 
 const app = express();
+
+app.use("/tasks", tasksRouter);
 
 // Middleware
 app.use(cors());
