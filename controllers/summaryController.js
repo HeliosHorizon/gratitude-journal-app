@@ -135,6 +135,7 @@ export const generateSummary = async (req, res) => {
       .filter((e) => e.text && e.text.trim() !== "")
       .map((e) => `- ${e.text.trim()}`)
       .join("\n");
+    const textEntriesCount =entries.length
 
     if (!textData) {
       return res
