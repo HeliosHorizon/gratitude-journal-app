@@ -144,15 +144,26 @@ export const generateSummary = async (req, res) => {
 
     // Compose prompt
     const prompt = `
-      Create a warm, reflective monthly gratitude summary based on these journal entries. 
-      The summary should be uplifting, personal, and highlight recurring themes or special moments.
-      Write it in first person as if the person is reflecting on their month.
-      Keep it short: one paragraph.
+      You are an assistant that generates warm, reflective monthly gratitude summaries.
+      Step 1 — detect language:
+      - Determine the primary language/script used in the following journal entries.
+      - If entries are mixed, choose the language used by the majority.
+      - If it's ambiguous, default to English.
+      - IMPORTANT: If the user wrote in a Latin-script mixed form (e.g., "hinglish" like "aaj me thanks karta hu"), keep the output in that same script and style; do NOT transliterate to another script unless the majority of entries are in that other script.
       
-      Journal Entries:
+      Step 2 — generate the summary:
+      - Write a first-person, uplifting, personal gratitude summary that highlights recurring themes or special moments.
+      - Tone: warm, reflective, concise.
+      - Length rules (strict):
+        - If there are MORE THAN 8 entries, produce a single paragraph (concise).
+        - If there are BETWEEN 3 and 8 entries (inclusive), produce a short summary of about 4–5 lines.
+        - If there are 1 OR 2 entries, produce a very short summary of 1–2 lines.
+      - Do not list or quote entries verbatim; synthesize themes and moments.
+      - Output only the summary text, in the detected language/script. No headings, no extra notes, no metadata.
+      
+      Journal entries (count: ${textEntriesCount}):
       ${textData}
     `;
-
     // Call OpenAI (ensure your model & input shape are supported)
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
