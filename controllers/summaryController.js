@@ -1,4 +1,3 @@
-// controllers/summaryController.js
 import Summary from "../models/Summary.js";
 import Entry from "../models/Entry.js";
 import OpenAI from "openai";
@@ -9,16 +8,17 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
  * Helper to compute UTC month start/end
  */
 function monthBoundsUTC(month) {
-  // month is "YYYY-MM"
-  const start = new Date(`${month}-01T00:00:00.000Z`); // UTC start of month
+  const start = new Date(`${month}-01T00:00:00.000Z`);
   const next = new Date(start);
-  next.setUTCMonth(next.getUTCMonth() + 1); // move to first of next month
-  const end = new Date(next.getTime() - 1); // last ms of requested month
+  next.setUTCMonth(next.getUTCMonth() + 1);
+  const end = new Date(next.getTime() - 1);
   return { start, end };
 }
 
 /**
  * POST /api/summary/generate
+ * Always generates a FRESH summary.
+ * Old summary (if any) is deleted before generation.
  */
 export const generateSummary = async (req, res) => {
   try {
@@ -27,184 +27,105 @@ export const generateSummary = async (req, res) => {
       return res.status(400).json({ error: "deviceId and month are required" });
     }
 
-    // validate month format
-    const monthRegex = /^\d{4}-\d{2}$/;
-    if (!monthRegex.test(month)) {
+    if (!/^\d{4}-\d{2}$/.test(month)) {
       return res.status(400).json({ error: "Month must be in YYYY-MM format" });
     }
 
     const { start, end } = monthBoundsUTC(month);
 
-    // Support both Date-object entries and legacy "YYYY-MM-DD" string entries.
     const dateRangeQuery = { date: { $gte: start, $lte: end } };
-    const stringMonthRegexQuery = { date: { $type: "string", $regex: `^${month}` } };
+    const stringMonthRegexQuery = {
+      date: { $type: "string", $regex: `^${month}` },
+    };
 
-    // Count documents that match either condition
-    const entriesCount = await Entry.countDocuments({
-      deviceId,
-      $or: [dateRangeQuery, stringMonthRegexQuery],
-    });
-
-    if (entriesCount === 0) {
-      return res.status(404).json({ error: "No entries found for this month", entriesCount });
-    }
-
-    // fetch entries (single declaration; we'll normalize and sort in JS below)
-    let entries = await Entry.find({
+    // Fetch entries
+    const entries = await Entry.find({
       deviceId,
       $or: [dateRangeQuery, stringMonthRegexQuery],
     }).lean();
 
-    // Normalize dates to dateObj (Date instance) for sorting and drop unparseable ones
-    entries = entries
-      .map((e) => {
-        // pick updatedAt if available for ordering relevance; still produce dateObj for sorting
-        let dateObj = null;
-        if (e.date instanceof Date) {
-          dateObj = e.date;
-        } else if (typeof e.date === "string") {
-          const tmp = new Date(e.date);
-          dateObj = isNaN(tmp.getTime()) ? null : tmp;
-        }
-        // also attach updatedAt if present (could be undefined)
-        const updatedAt = e.updatedAt ? new Date(e.updatedAt) : null;
-        return { ...e, dateObj, updatedAt };
-      })
-      .filter((e) => e.dateObj !== null); // drop entries with unparseable dates
-
-    // Sort by normalized date ascending (fallback to updatedAt if date ties)
-    entries.sort((a, b) => {
-      const diff = a.dateObj - b.dateObj;
-      if (diff !== 0) return diff;
-      const au = a.updatedAt ? a.updatedAt.getTime() : 0;
-      const bu = b.updatedAt ? b.updatedAt.getTime() : 0;
-      return au - bu;
-    });
-
-    // fetch existing summary doc (if any)
-    const summaryDoc = await Summary.findOne({ deviceId, month });
-    const prevCount = summaryDoc ? Number(summaryDoc.entriesCountAtLastGenerate || 0) : 0;
-
-    // Find the newest entry timestamp for that month (prefer updatedAt, fallback to date)
-    // We try to avoid an extra DB query by using the normalized `entries` above if possible.
-    let latestEntryAt = null;
-    if (entries.length > 0) {
-      // find the max of updatedAt or dateObj
-      latestEntryAt = entries.reduce((max, e) => {
-        const cand = e.updatedAt || e.dateObj;
-        if (!cand) return max;
-        if (!max) return cand;
-        return new Date(cand) > new Date(max) ? cand : max;
-      }, null);
-    } else {
-      // as a fallback (shouldn't usually happen because entriesCount > 0), query DB
-      const latestEntry = await Entry.findOne({
-        deviceId,
-        $or: [dateRangeQuery, stringMonthRegexQuery],
-      })
-        .sort({ updatedAt: -1, date: -1 })
-        .select("updatedAt date")
-        .lean();
-      latestEntryAt = latestEntry ? (latestEntry.updatedAt || latestEntry.date) : null;
-    }
-
-    // Decide whether regeneration is needed.
-    // Regenerate if:
-    //  - no previous summary, or
-    //  - count changed, or
-    //  - newest entry timestamp is newer than generatedAt (account for missing generatedAt)
-    const generatedAt = summaryDoc ? (summaryDoc.generatedAt || summaryDoc.createdAt) : null;
-
-    const needsRegeneration =
-      !summaryDoc ||
-      Number(entriesCount) !== Number(prevCount) ||
-      (latestEntryAt && (!generatedAt || new Date(latestEntryAt) > new Date(generatedAt)));
-
-    if (!needsRegeneration) {
-      return res.status(400).json({
-        error: "No new entries since last generated summary",
-        needsRegeneration: false,
-        entriesCount,
-        entriesCountAtLastGenerate: prevCount,
-        summary: summaryDoc ? summaryDoc.summaryText : null,
+    if (!entries.length) {
+      // 🔥 If no entries, remove any existing summary
+      await Summary.deleteOne({ deviceId, month });
+      return res.status(404).json({
+        error: "No entries found for this month",
+        entriesCount: 0,
       });
     }
 
-    // Prepare text data (change `text` to `content` or the real field if different)
     const textData = entries
-      .filter((e) => e.text && e.text.trim() !== "")
+      .filter((e) => e.text && e.text.trim())
       .map((e) => `- ${e.text.trim()}`)
       .join("\n");
-    const textEntriesCount =entries.length
 
     if (!textData) {
-      return res
-        .status(400)
-        .json({ error: "No text content found for summary", entriesCount });
+      await Summary.deleteOne({ deviceId, month });
+      return res.status(400).json({
+        error: "No text content found for summary",
+        entriesCount: entries.length,
+      });
     }
 
-    // Compose prompt
+    // 🔥 HARD RESET: delete old summary BEFORE generation
+    await Summary.deleteOne({ deviceId, month });
+
+    const entryCount = entries.length;
+
     const prompt = `
-      You are an assistant that generates warm, reflective monthly gratitude summaries.
-      Step 1 — detect language:
-      - Determine the primary language/script used in the following journal entries.
-      - If entries are mixed, choose the language used by the majority.
-      - If it's ambiguous, default to English.
-      - IMPORTANT: If the user wrote in a Latin-script mixed form (e.g., "hinglish" like "aaj me thanks karta hu"), keep the output in that same script and style; do NOT transliterate to another script unless the majority of entries are in that other script.
-      
-      Step 2 — generate the summary:
-      - Write a first-person, uplifting, personal gratitude summary that highlights recurring themes or special moments.
-      - Tone: warm, reflective, concise.
-      - Length rules (strict):
-        - If there are MORE THAN 8 entries, produce a single paragraph (concise).
-        - If there are BETWEEN 3 and 8 entries (inclusive), produce a short summary of about 4–5 lines.
-        - If there are 1 OR 2 entries, produce a very short summary of 1–2 lines.
-      - Do not list or quote entries verbatim; synthesize themes and moments.
-      - Output only the summary text, in the detected language/script. No headings, no extra notes, no metadata.
-      
-      Journal entries (count: ${textEntriesCount}):
-      ${textData}
-    `;
-    // Call OpenAI (ensure your model & input shape are supported)
+You are generating a BRAND NEW monthly gratitude summary.
+
+CRITICAL RULES:
+- Ignore any previously generated summaries.
+- Do NOT continue or reference past summaries.
+- Base the summary ONLY on the journal entries below.
+
+Writing rules:
+- First person
+- Warm, reflective, uplifting
+- No bullet points, no quoting entries
+
+Length rules:
+- More than 8 entries → 1 short paragraph
+- 3–8 entries → ~4–5 lines
+- 1–2 entries → 1–2 lines
+
+Journal entries (count: ${entryCount}):
+${textData}
+
+Output ONLY the summary text.
+`;
+
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       input: prompt,
-      // optionally set max tokens or other params here
     });
 
-    // response parsing may vary by SDK version; adjust if needed
     const summaryText =
-      response?.output?.[0]?.content?.[0]?.text?.trim() || (response.output_text || "").trim();
+      response?.output?.[0]?.content?.[0]?.text?.trim() ||
+      response.output_text?.trim();
 
     if (!summaryText) {
-      return res.status(500).json({ error: "Failed to parse generated summary" });
+      return res.status(500).json({ error: "Failed to generate summary" });
     }
 
-    // Save or update summary with entriesCountAtLastGenerate and generatedAt
-    const upsert = {
+    const saved = await Summary.create({
+      deviceId,
+      month,
       summaryText,
-      entriesCountAtLastGenerate: entriesCount,
+      entriesCountAtLastGenerate: entryCount,
       generatedAt: new Date(),
-    };
-
-    const updated = await Summary.findOneAndUpdate(
-      { deviceId, month },
-      upsert,
-      { upsert: true, new: true, runValidators: true }
-    );
+    });
 
     return res.status(200).json({
       success: true,
-      summary: updated.summaryText,
-      month: updated.month,
+      summary: saved.summaryText,
+      month,
       needsRegeneration: false,
-      entriesCount,
-      entriesCountAtLastGenerate: updated.entriesCountAtLastGenerate,
-      generatedAt: updated.generatedAt,
+      entriesCount: entryCount,
+      generatedAt: saved.generatedAt,
     });
   } catch (error) {
     console.error("Summary generation error:", error);
-    // handle unique constraint or other DB-specific errors as needed
     res.status(500).json({
       error: "Failed to generate summary",
       details: error.message,
@@ -222,17 +143,17 @@ export const getSummary = async (req, res) => {
       return res.status(400).json({ error: "deviceId and month are required" });
     }
 
-    const monthRegex = /^\d{4}-\d{2}$/;
-    if (!monthRegex.test(month)) {
+    if (!/^\d{4}-\d{2}$/.test(month)) {
       return res.status(400).json({ error: "Month must be in YYYY-MM format" });
     }
 
     const { start, end } = monthBoundsUTC(month);
 
     const dateRangeQuery = { date: { $gte: start, $lte: end } };
-    const stringMonthRegexQuery = { date: { $type: "string", $regex: `^${month}` } };
+    const stringMonthRegexQuery = {
+      date: { $type: "string", $regex: `^${month}` },
+    };
 
-    // entries count (supports both date types)
     const entriesCount = await Entry.countDocuments({
       deviceId,
       $or: [dateRangeQuery, stringMonthRegexQuery],
@@ -240,43 +161,13 @@ export const getSummary = async (req, res) => {
 
     const summaryDoc = await Summary.findOne({ deviceId, month });
 
-    // newest entry timestamp for the month (prefer updatedAt, fallback to date)
-    const latestEntry = await Entry.findOne({
-      deviceId,
-      $or: [dateRangeQuery, stringMonthRegexQuery],
-    })
-      .sort({ updatedAt: -1, date: -1 })
-      .select("updatedAt date")
-      .lean();
-
-    const latestEntryAt = latestEntry ? (latestEntry.updatedAt || latestEntry.date) : null;
-    const generatedAt = summaryDoc ? (summaryDoc.generatedAt || summaryDoc.createdAt) : null;
-
-    const needsRegeneration =
-      !summaryDoc ||
-      Number(entriesCount) !== Number(summaryDoc.entriesCountAtLastGenerate || 0) ||
-      (latestEntryAt && (!generatedAt || new Date(latestEntryAt) > new Date(generatedAt)));
-
-    if (!summaryDoc) {
-      return res.status(200).json({
-        success: true,
-        summary: null,
-        hasSummary: false,
-        needsRegeneration,
-        entriesCount,
-        entriesCountAtLastGenerate: 0,
-        generatedAt: null,
-      });
-    }
-
     return res.status(200).json({
       success: true,
-      summary: summaryDoc.summaryText,
-      hasSummary: true,
-      needsRegeneration,
+      summary: summaryDoc ? summaryDoc.summaryText : null,
+      hasSummary: Boolean(summaryDoc),
+      needsRegeneration: entriesCount > 0,
       entriesCount,
-      entriesCountAtLastGenerate: summaryDoc.entriesCountAtLastGenerate || 0,
-      generatedAt: summaryDoc.generatedAt || summaryDoc.createdAt,
+      generatedAt: summaryDoc?.generatedAt || null,
     });
   } catch (error) {
     console.error("Get summary error:", error);
@@ -286,7 +177,6 @@ export const getSummary = async (req, res) => {
 
 /**
  * GET /api/summary/months/:deviceId
- * Returns months that have entries + months that have summaries.
  */
 export const getAvailableMonths = async (req, res) => {
   try {
@@ -295,7 +185,6 @@ export const getAvailableMonths = async (req, res) => {
       return res.status(400).json({ error: "deviceId is required" });
     }
 
-    // Distinct month strings from entry dates (works for Date fields; string-dates won't be included here)
     const monthsAgg = await Entry.aggregate([
       { $match: { deviceId } },
       {
@@ -305,18 +194,14 @@ export const getAvailableMonths = async (req, res) => {
           },
         },
       },
-      { $sort: { "_id": -1 } },
+      { $sort: { _id: -1 } },
     ]);
 
-    const uniqueMonths = monthsAgg.map((m) => m._id);
-
-    const summaries = await Summary.find({ deviceId }).select("month -_id");
-    const monthsWithSummaries = summaries.map((s) => s.month);
+    const availableMonths = monthsAgg.map((m) => m._id);
 
     return res.json({
       success: true,
-      availableMonths: uniqueMonths,
-      monthsWithSummaries,
+      availableMonths,
     });
   } catch (error) {
     console.error("Get available months error:", error);
