@@ -4,9 +4,9 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/**
- * Helper to compute UTC month start/end
- */
+/* ---------------------------------------
+   Helpers
+----------------------------------------*/
 function monthBoundsUTC(month) {
   const start = new Date(`${month}-01T00:00:00.000Z`);
   const next = new Date(start);
@@ -15,62 +15,47 @@ function monthBoundsUTC(month) {
   return { start, end };
 }
 
-/**
- * POST /api/summary/generate
- * Always generates a FRESH summary.
- * Old summary (if any) is deleted before generation.
- */
+/* ---------------------------------------
+   POST /api/summary/generate
+   Always generates a FRESH summary
+----------------------------------------*/
 export const generateSummary = async (req, res) => {
   try {
-    const { deviceId, month } = req.body;
-    if (!deviceId || !month) {
-      return res.status(400).json({ error: "deviceId and month are required" });
-    }
+    const userId = req.user._id;
+    const { month } = req.body;
 
-    if (!/^\d{4}-\d{2}$/.test(month)) {
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
       return res.status(400).json({ error: "Month must be in YYYY-MM format" });
     }
 
     const { start, end } = monthBoundsUTC(month);
 
-    const dateRangeQuery = { date: { $gte: start, $lte: end } };
-    const stringMonthRegexQuery = {
-      date: { $type: "string", $regex: `^${month}` },
-    };
-
-    // Fetch entries
+    // 🔹 Source of truth: entries ONLY
     const entries = await Entry.find({
-      deviceId,
-      $or: [dateRangeQuery, stringMonthRegexQuery],
+      user: userId,
+      createdAt: { $gte: start, $lte: end },
     }).lean();
 
     if (!entries.length) {
-      // 🔥 If no entries, remove any existing summary
-      await Summary.deleteOne({ deviceId, month });
-      return res.status(404).json({
-        error: "No entries found for this month",
-        entriesCount: 0,
-      });
+      await Summary.deleteOne({ user: userId, month });
+      return res.status(404).json({ error: "No entries found for this month" });
     }
 
-    const textData = entries
-      .filter((e) => e.text && e.text.trim())
-      .map((e) => `- ${e.text.trim()}`)
-      .join("\n");
+    const textEntries = entries
+      .filter(e => e.text && e.text.trim())
+      .map(e => `- ${e.text.trim()}`);
 
-    if (!textData) {
-      await Summary.deleteOne({ deviceId, month });
-      return res.status(400).json({
-        error: "No text content found for summary",
-        entriesCount: entries.length,
-      });
+    if (!textEntries.length) {
+      await Summary.deleteOne({ user: userId, month });
+      return res.status(400).json({ error: "No text content found" });
     }
 
-    // 🔥 HARD RESET: delete old summary BEFORE generation
-    await Summary.deleteOne({ deviceId, month });
+    const entryCount = textEntries.length;
 
-    const entryCount = entries.length;
+    // 🔥 HARD RESET — guarantees no old summary influence
+    await Summary.deleteOne({ user: userId, month });
 
+    /* ===================== PROMPT ===================== */
     const prompt = `
 You are generating a BRAND NEW monthly gratitude summary.
 
@@ -79,21 +64,31 @@ CRITICAL RULES:
 - Do NOT continue or reference past summaries.
 - Base the summary ONLY on the journal entries below.
 
-Writing rules:
+LANGUAGE RULES:
+- Detect the primary language/script used by the user.
+- If entries are mixed, use the majority language.
+- If the user writes in Latin-script mixed language (e.g. Hinglish like "aaj me thankful hu"),
+  KEEP the same script and style.
+- Do NOT transliterate unless the user already did.
+
+WRITING STYLE:
 - First person
 - Warm, reflective, uplifting
-- No bullet points, no quoting entries
+- Personal and natural
+- No bullet points
+- Do not quote entries verbatim
 
-Length rules:
+LENGTH RULES (STRICT):
 - More than 8 entries → 1 short paragraph
 - 3–8 entries → ~4–5 lines
 - 1–2 entries → 1–2 lines
 
 Journal entries (count: ${entryCount}):
-${textData}
+${textEntries.join("\n")}
 
 Output ONLY the summary text.
 `;
+    /* ================================================= */
 
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
@@ -109,102 +104,64 @@ Output ONLY the summary text.
     }
 
     const saved = await Summary.create({
-      deviceId,
+      user: userId,
       month,
-      summaryText,
+      summary: summaryText,
       entriesCountAtLastGenerate: entryCount,
       generatedAt: new Date(),
     });
 
-    return res.status(200).json({
+    return res.json({
       success: true,
-      summary: saved.summaryText,
-      month,
+      summary: saved.summary,
       needsRegeneration: false,
       entriesCount: entryCount,
       generatedAt: saved.generatedAt,
     });
-  } catch (error) {
-    console.error("Summary generation error:", error);
-    res.status(500).json({
-      error: "Failed to generate summary",
-      details: error.message,
-    });
+  } catch (err) {
+    console.error("Summary generation error:", err);
+    res.status(500).json({ error: "Failed to generate summary" });
   }
 };
 
-/**
- * GET /api/summary/:deviceId/:month
- */
+/* ---------------------------------------
+   GET /api/summary/:month
+----------------------------------------*/
 export const getSummary = async (req, res) => {
   try {
-    const { deviceId, month } = req.params;
-    if (!deviceId || !month) {
-      return res.status(400).json({ error: "deviceId and month are required" });
-    }
+    const userId = req.user._id;
+    const { month } = req.params;
 
-    if (!/^\d{4}-\d{2}$/.test(month)) {
-      return res.status(400).json({ error: "Month must be in YYYY-MM format" });
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: "Invalid month format" });
     }
 
     const { start, end } = monthBoundsUTC(month);
 
-    const dateRangeQuery = { date: { $gte: start, $lte: end } };
-    const stringMonthRegexQuery = {
-      date: { $type: "string", $regex: `^${month}` },
-    };
-
     const entriesCount = await Entry.countDocuments({
-      deviceId,
-      $or: [dateRangeQuery, stringMonthRegexQuery],
+      user: userId,
+      createdAt: { $gte: start, $lte: end },
     });
 
-    const summaryDoc = await Summary.findOne({ deviceId, month });
+    const summaryDoc = await Summary.findOne({ user: userId, month });
 
-    return res.status(200).json({
-      success: true,
-      summary: summaryDoc ? summaryDoc.summaryText : null,
-      hasSummary: Boolean(summaryDoc),
-      needsRegeneration: entriesCount > 0,
-      entriesCount,
-      generatedAt: summaryDoc?.generatedAt || null,
-    });
-  } catch (error) {
-    console.error("Get summary error:", error);
-    res.status(500).json({ error: "Failed to fetch summary" });
-  }
-};
-
-/**
- * GET /api/summary/months/:deviceId
- */
-export const getAvailableMonths = async (req, res) => {
-  try {
-    const { deviceId } = req.params;
-    if (!deviceId) {
-      return res.status(400).json({ error: "deviceId is required" });
-    }
-
-    const monthsAgg = await Entry.aggregate([
-      { $match: { deviceId } },
-      {
-        $group: {
-          _id: {
-            $dateToString: { format: "%Y-%m", date: "$date" },
-          },
-        },
-      },
-      { $sort: { _id: -1 } },
-    ]);
-
-    const availableMonths = monthsAgg.map((m) => m._id);
+    const needsRegeneration =
+      entriesCount > 0 &&
+      (!summaryDoc ||
+        summaryDoc.entriesCountAtLastGenerate !== entriesCount);
 
     return res.json({
       success: true,
-      availableMonths,
+      summary: summaryDoc?.summary || null,
+      hasSummary: Boolean(summaryDoc),
+      needsRegeneration,
+      entriesCount,
+      entriesCountAtLastGenerate:
+        summaryDoc?.entriesCountAtLastGenerate || 0,
+      generatedAt: summaryDoc?.generatedAt || null,
     });
-  } catch (error) {
-    console.error("Get available months error:", error);
-    res.status(500).json({ error: "Failed to fetch available months" });
+  } catch (err) {
+    console.error("Get summary error:", err);
+    res.status(500).json({ error: "Failed to fetch summary" });
   }
 };

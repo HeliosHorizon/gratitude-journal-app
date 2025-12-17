@@ -1,55 +1,113 @@
-// controllers/userControllers.js
 import User from "../models/User.js";
-import admin from "../utils/firebaseAdmin.js"; 
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import admin from "../utils/firebaseAdmin.js";
+
+const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 
 /* ---------------------------------------
-   REGISTER USER (same as your old logic)
+   REGISTER USER
 ------------------------------------------*/
 export const registerUser = async (req, res) => {
   try {
-    const { deviceId } = req.body;
-    console.log("📥 Received request to register:", req.body);
-    if (!deviceId) return res.status(400).json({ error: "Device ID required" });
+    const { username, password } = req.body;
 
-    let user = await User.findOne({ deviceId });
-    if (user) {
-      console.log("✅ Existing user found:", user.deviceId);
-    } else {
-      user = await User.create({ deviceId });
-      console.log("🆕 New user created:", user.deviceId);
-    }
+    if (!username || !password)
+      return res.status(400).json({ error: "Username & password required" });
 
-    res.json(user);
-  } catch (error) {
-    console.error("Error in user registration:", error);
-    res.status(500).json({ error: "Failed to register or fetch user" });
+    const existing = await User.findOne({ username });
+    if (existing)
+      return res.status(409).json({ error: "Username already taken" });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = await User.create({
+      username,
+      password: hashedPassword,
+    });
+
+    const token = jwt.sign(
+      { userId: user._id, username: user.username },
+      JWT_SECRET,
+      { expiresIn: "30d" }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        streak: user.streak,
+      },
+    });
+  } catch (err) {
+    console.error("Register error:", err);
+    res.status(500).json({ error: "Registration failed" });
   }
 };
 
 /* ---------------------------------------
-   UPDATE STREAK (same as your old logic)
+   LOGIN USER
+------------------------------------------*/
+export const loginUser = async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    const user = await User.findOne({ username });
+    if (!user)
+      return res.status(401).json({ error: "Invalid credentials" });
+
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid)
+      return res.status(401).json({ error: "Invalid credentials" });
+
+    const token = jwt.sign(
+      { userId: user._id, username: user.username },
+      JWT_SECRET,
+      { expiresIn: "30d" }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        streak: user.streak,
+      },
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: "Login failed" });
+  }
+};
+
+/* ---------------------------------------
+   UPDATE STREAK (JWT protected)
 ------------------------------------------*/
 export const updateStreak = async (req, res) => {
   try {
-    const { deviceId, currentDate } = req.body;
-    if (!deviceId || !currentDate) {
-      return res.status(400).json({ error: "Missing deviceId or currentDate" });
-    }
+    const { currentDate } = req.body;
+    const { userId } = req.user;
 
-    const user = await User.findOne({ deviceId });
+    if (!currentDate)
+      return res.status(400).json({ error: "currentDate required" });
+
+    const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const lastEntryDate = user.lastEntryDate;
     const today = new Date(currentDate);
     const yesterday = new Date(today);
     yesterday.setDate(today.getDate() - 1);
 
-    const last = lastEntryDate ? new Date(lastEntryDate).toDateString() : null;
+    const last = user.lastEntryDate
+      ? new Date(user.lastEntryDate).toDateString()
+      : null;
+
     const todayStr = today.toDateString();
     const yesterdayStr = yesterday.toDateString();
 
     if (last === todayStr) {
-      return res.json({ message: "Already updated today", streak: user.streak });
+      return res.json({ message: "Already updated", streak: user.streak });
     } else if (last === yesterdayStr) {
       user.streak += 1;
     } else {
@@ -60,78 +118,63 @@ export const updateStreak = async (req, res) => {
     await user.save();
 
     res.json({ message: "Streak updated", streak: user.streak });
-  } catch (error) {
-    console.error("Error updating streak:", error);
+  } catch (err) {
+    console.error("Streak error:", err);
     res.status(500).json({ error: "Failed to update streak" });
   }
 };
 
 /* ---------------------------------------
-   SAVE LATEST FCM TOKEN (new endpoint)
+   SAVE FCM TOKEN (JWT protected)
 ------------------------------------------*/
-// controllers/userControllers.js (replace saveFcmToken)
 export const saveFcmToken = async (req, res) => {
   try {
-    console.log("📥 /save-fcm-token body:", req.body);
+    const { fcmToken } = req.body;
+    const { userId } = req.user;
 
-    const { deviceId, fcmToken, platform } = req.body || {};
+    if (!userId) {
+      return res.status(401).json({ error: "User not authenticated" });
+    }
 
-    if (!deviceId) return res.status(400).json({ error: "deviceId required" });
-    if (!fcmToken) return res.status(400).json({ error: "fcmToken required" });
+    if (!fcmToken) {
+      return res.status(400).json({ error: "fcmToken required" });
+    }
 
-    // Upsert pattern: if user exists, update token; otherwise create new
-    const user = await User.findOneAndUpdate(
-      { deviceId },
-      {
-        $set: {
-          fcmToken,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: {
-          deviceId,
-          streak: 0,
-          lastEntryDate: null,
-          createdAt: new Date(),
-        }
-      },
-      { new: true, upsert: true }
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { fcmToken },
+      { new: true }
     );
 
-    console.log("✅ saveFcmToken result user:", user.deviceId, user.fcmToken);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-    return res.json({ message: "Token saved", user });
-  } catch (error) {
-    console.error("Save FCM error:", error);
-    return res.status(500).json({ error: "Failed to save FCM token" });
+    console.log("✅ FCM token saved for:", user.username);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("FCM save error:", err);
+    res.status(500).json({ error: "Failed to save FCM token" });
   }
 };
 
 
 /* ---------------------------------------
-   SEND NOTIFICATION TO ALL USERS (scheduler)
+   SEND NOTIFICATION TO ALL USERS
 ------------------------------------------*/
 export const sendNotificationToAll = async (title, body) => {
   try {
     const users = await User.find({ fcmToken: { $ne: null } });
-
-    if (!users.length) {
-      console.log("❌ No FCM tokens to send");
-      return;
-    }
+    if (!users.length) return;
 
     const tokens = users.map((u) => u.fcmToken);
 
-    const message = {
+    await admin.messaging().sendMulticast({
       notification: { title, body },
       tokens,
-    };
-
-    const response = await admin.messaging().sendMulticast(message);
-
-    console.log(
-      `📤 Notification sent | Success: ${response.successCount} | Fail: ${response.failureCount}`
-    );
+    });
   } catch (err) {
-    console.error("Error sending notifications:", err);
+    console.error("Notification error:", err);
   }
 };

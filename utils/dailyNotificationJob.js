@@ -341,7 +341,7 @@ export const runDailyJobOnce = async () => {
     }
 
     const randomMessage = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
-    const title = "Daily Gratitude Reminder";
+    const title = "MyThanks reminder";
     const body = randomMessage;
 
     // If admin.messaging has a high-level send, use it; otherwise use HTTP v1
@@ -410,7 +410,7 @@ export const startDailyJob = () => {
 
   // Runs every day at the configured cron time (server timezone by default)
   // NOTE: Update this cron expression or add timezone option if you need a specific tz.
-  cron.schedule("31 11 * * *", async () => {
+  cron.schedule("20 1 * * *", async () => {
     try {
       await runDailyJobOnce();
     } catch (err) {
