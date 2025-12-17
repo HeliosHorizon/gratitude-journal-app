@@ -1,4 +1,3 @@
-// controllers/entryController.js
 import Entry from "../models/Entry.js";
 import cloudinary from "../utils/cloudinary.js";
 import multer from "multer";
@@ -8,18 +7,29 @@ import fs from "fs";
 const upload = multer({ dest: "uploads/" });
 export const uploadMiddleware = upload.single("image");
 
-// streak (unchanged)
-const calculateStreak = async (deviceId) => {
-  const entries = await Entry.find({ deviceId });
+/* -------------------------
+   STREAK (user-based)
+--------------------------*/
+const calculateStreak = async (userId) => {
+  const entries = await Entry.find({ user: userId }).select("date");
   const uniqueDays = [...new Set(entries.map((e) => e.date))];
   return uniqueDays.length;
 };
 
-// Add entry: store imagePublicId
+/* -------------------------
+   ADD ENTRY
+--------------------------*/
 export const addEntry = async (req, res) => {
   try {
-    const { deviceId, text, date } = req.body;
-    if (!deviceId || !date) return res.status(400).json({ error: "Missing fields" });
+    const userId = req.user._id;
+    const { text, date } = req.body;
+
+    if (!text && !req.file) {
+      return res.status(400).json({ error: "Text or image required" });
+    }
+    if (!date) {
+      return res.status(400).json({ error: "Date is required" });
+    }
 
     let imageUrl = null;
     let imagePublicId = null;
@@ -29,12 +39,20 @@ export const addEntry = async (req, res) => {
         folder: "gratitude_entries",
       });
       imageUrl = result.secure_url;
-      imagePublicId = result.public_id;     // 👈 keep it
+      imagePublicId = result.public_id;
       fs.unlinkSync(req.file.path);
     }
 
-    const entry = await Entry.create({ deviceId, text, imageUrl, imagePublicId, date });
-    const streak = await calculateStreak(deviceId);
+    const entry = await Entry.create({
+      user: userId,
+      text,
+      imageUrl,
+      imagePublicId,
+      date,
+    });
+
+    const streak = await calculateStreak(userId);
+
     res.json({ entry, streak });
   } catch (error) {
     console.error("❌ Error creating entry:", error);
@@ -42,46 +60,58 @@ export const addEntry = async (req, res) => {
   }
 };
 
-// Get entries (unchanged)
+/* -------------------------
+   GET ENTRIES
+--------------------------*/
 export const getEntries = async (req, res) => {
   try {
-    const { deviceId } = req.params;
-    const entries = await Entry.find({ deviceId }).sort({ date: 1, _id: 1 });
+    const userId = req.user._id;
+
+    const entries = await Entry.find({ user: userId })
+      .sort({ date: 1, _id: 1 });
+
     res.json(entries);
   } catch (error) {
-    console.error("Error fetching entries:", error);
+    console.error("❌ Error fetching entries:", error);
     res.status(500).json({ error: "Failed to fetch entries" });
   }
 };
 
-// Delete by Mongo _id + deviceId
+/* -------------------------
+   DELETE ENTRY
+--------------------------*/
 export const deleteEntry = async (req, res) => {
   try {
-    const { id } = req.params;               // 👈 param name is "id"
-    const { deviceId } = req.body;
+    const userId = req.user._id;
+    const { id } = req.params;
 
-    if (!deviceId) return res.status(400).json({ error: "deviceId required" });
-
-    const entry = await Entry.findOne({ _id: id, deviceId }); // 👈 use _id
-    if (!entry) return res.status(404).json({ error: "Entry not found" });
-
-    if (entry.imagePublicId) {
-      try { await cloudinary.uploader.destroy(entry.imagePublicId); } catch {}
+    const entry = await Entry.findOne({ _id: id, user: userId });
+    if (!entry) {
+      return res.status(404).json({ error: "Entry not found" });
     }
 
-    await Entry.deleteOne({ _id: entry._id, deviceId });      // 👈 secure delete
+    if (entry.imagePublicId) {
+      try {
+        await cloudinary.uploader.destroy(entry.imagePublicId);
+      } catch {}
+    }
+
+    await Entry.deleteOne({ _id: entry._id });
+
     res.json({ message: "Entry deleted", id });
   } catch (error) {
-    console.error("Error deleting entry:", error);
+    console.error("❌ Error deleting entry:", error);
     res.status(500).json({ error: "Failed to delete entry" });
   }
 };
 
-// Streak (unchanged)
+/* -------------------------
+   GET STREAK
+--------------------------*/
 export const getStreak = async (req, res) => {
   try {
-    const { deviceId } = req.params;
-    const streak = await calculateStreak(deviceId);
+    const userId = req.user._id;
+    const streak = await calculateStreak(userId);
     res.json({ streak });
   } catch (error) {
     console.error("❌ Error fetching streak:", error);
