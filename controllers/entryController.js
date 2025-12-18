@@ -1,10 +1,14 @@
 import Entry from "../models/Entry.js";
 import cloudinary from "../utils/cloudinary.js";
 import multer from "multer";
-import fs from "fs";
 
-// upload middleware (unchanged)
-const upload = multer({ dest: "uploads/" });
+/* -------------------------
+   MULTER (MEMORY STORAGE)
+   ✅ Render-safe
+--------------------------*/
+const upload = multer({
+  storage: multer.memoryStorage(),
+});
 export const uploadMiddleware = upload.single("image");
 
 /* -------------------------
@@ -27,6 +31,7 @@ export const addEntry = async (req, res) => {
     if (!text && !req.file) {
       return res.status(400).json({ error: "Text or image required" });
     }
+
     if (!date) {
       return res.status(400).json({ error: "Date is required" });
     }
@@ -34,13 +39,20 @@ export const addEntry = async (req, res) => {
     let imageUrl = null;
     let imagePublicId = null;
 
+    // ✅ Cloudinary upload via buffer
     if (req.file) {
-      const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: "gratitude_entries",
+      const uploadResult = await new Promise((resolve, reject) => {
+        cloudinary.uploader.upload_stream(
+          { folder: "gratitude_entries" },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        ).end(req.file.buffer);
       });
-      imageUrl = result.secure_url;
-      imagePublicId = result.public_id;
-      fs.unlinkSync(req.file.path);
+
+      imageUrl = uploadResult.secure_url;
+      imagePublicId = uploadResult.public_id;
     }
 
     const entry = await Entry.create({
@@ -67,8 +79,10 @@ export const getEntries = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    const entries = await Entry.find({ user: userId })
-      .sort({ date: 1, _id: 1 });
+    const entries = await Entry.find({ user: userId }).sort({
+      date: -1,
+      _id: -1,
+    });
 
     res.json(entries);
   } catch (error) {
