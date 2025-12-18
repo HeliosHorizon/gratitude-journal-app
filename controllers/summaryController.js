@@ -21,7 +21,7 @@ function monthBoundsUTC(month) {
 ----------------------------------------*/
 export const generateSummary = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
     const { month } = req.body;
 
     if (!month || !/^\d{4}-\d{2}$/.test(month)) {
@@ -129,7 +129,7 @@ Output ONLY the summary text.
 ----------------------------------------*/
 export const getSummary = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
     const { month } = req.params;
 
     if (!month || !/^\d{4}-\d{2}$/.test(month)) {
