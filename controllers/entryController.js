@@ -25,7 +25,7 @@ const calculateStreak = async (userId) => {
 --------------------------*/
 export const addEntry = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
     const { text, date } = req.body;
 
     if (!text && !req.file) {
@@ -77,7 +77,7 @@ export const addEntry = async (req, res) => {
 --------------------------*/
 export const getEntries = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
 
     const entries = await Entry.find({ user: userId }).sort({
       date: -1,
@@ -96,7 +96,7 @@ export const getEntries = async (req, res) => {
 --------------------------*/
 export const deleteEntry = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
     const { id } = req.params;
 
     const entry = await Entry.findOne({ _id: id, user: userId });
@@ -124,7 +124,7 @@ export const deleteEntry = async (req, res) => {
 --------------------------*/
 export const getStreak = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
     const streak = await calculateStreak(userId);
     res.json({ streak });
   } catch (error) {
