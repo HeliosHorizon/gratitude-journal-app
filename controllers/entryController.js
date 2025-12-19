@@ -1,27 +1,26 @@
 import Entry from "../models/Entry.js";
+import User from "../models/User.js";
 import cloudinary from "../utils/cloudinary.js";
 import multer from "multer";
+import fs from "fs";
 
-/* -------------------------
-   MULTER (MEMORY STORAGE)
-   ✅ Render-safe
---------------------------*/
-const upload = multer({
-  storage: multer.memoryStorage(),
-});
+const upload = multer({ dest: "uploads/" });
 export const uploadMiddleware = upload.single("image");
 
 /* -------------------------
-   STREAK (user-based)
+   DATE HELPERS
 --------------------------*/
-const calculateStreak = async (userId) => {
-  const entries = await Entry.find({ user: userId }).select("date");
-  const uniqueDays = [...new Set(entries.map((e) => e.date))];
-  return uniqueDays.length;
+const toDateOnly = (d) =>
+  new Date(d).toISOString().slice(0, 10); // YYYY-MM-DD
+
+const daysBetween = (a, b) => {
+  const d1 = new Date(a);
+  const d2 = new Date(b);
+  return Math.floor((d2 - d1) / (1000 * 60 * 60 * 24));
 };
 
 /* -------------------------
-   ADD ENTRY
+   ADD ENTRY (AUTH)
 --------------------------*/
 export const addEntry = async (req, res) => {
   try {
@@ -31,41 +30,64 @@ export const addEntry = async (req, res) => {
     if (!text && !req.file) {
       return res.status(400).json({ error: "Text or image required" });
     }
-
     if (!date) {
       return res.status(400).json({ error: "Date is required" });
     }
 
+    const entryDate = toDateOnly(date);
+
     let imageUrl = null;
     let imagePublicId = null;
 
-    // ✅ Cloudinary upload via buffer
     if (req.file) {
-      const uploadResult = await new Promise((resolve, reject) => {
-        cloudinary.uploader.upload_stream(
-          { folder: "gratitude_entries" },
-          (error, result) => {
-            if (error) reject(error);
-            else resolve(result);
-          }
-        ).end(req.file.buffer);
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: "gratitude_entries",
       });
-
-      imageUrl = uploadResult.secure_url;
-      imagePublicId = uploadResult.public_id;
+      imageUrl = result.secure_url;
+      imagePublicId = result.public_id;
+      fs.unlinkSync(req.file.path);
     }
 
+    // Create entry
     const entry = await Entry.create({
       user: userId,
       text,
       imageUrl,
       imagePublicId,
-      date,
+      date: entryDate,
     });
 
-    const streak = await calculateStreak(userId);
+    // 🔥 STREAK LOGIC (SOURCE OF TRUTH)
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-    res.json({ entry, streak });
+    if (!user.lastEntryDate) {
+      // First entry ever
+      user.streak = 1;
+    } else {
+      const diff = daysBetween(user.lastEntryDate, entryDate);
+
+      if (diff === 0) {
+        // same day → do nothing
+      } else if (diff === 1) {
+        // consecutive day
+        user.streak += 1;
+      } else {
+        // missed one or more days
+        user.streak = 1;
+      }
+    }
+
+    user.lastEntryDate = entryDate;
+    await user.save();
+
+    res.json({
+      entry,
+      streak: user.streak,
+      lastEntryDate: user.lastEntryDate,
+    });
   } catch (error) {
     console.error("❌ Error creating entry:", error);
     res.status(500).json({ error: "Failed to save entry" });
@@ -79,10 +101,8 @@ export const getEntries = async (req, res) => {
   try {
     const userId = req.user.userId;
 
-    const entries = await Entry.find({ user: userId }).sort({
-      date: -1,
-      _id: -1,
-    });
+    const entries = await Entry.find({ user: userId })
+      .sort({ date: 1, _id: 1 });
 
     res.json(entries);
   } catch (error) {
@@ -120,13 +140,21 @@ export const deleteEntry = async (req, res) => {
 };
 
 /* -------------------------
-   GET STREAK
+   GET STREAK (SOURCE OF TRUTH)
 --------------------------*/
 export const getStreak = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const streak = await calculateStreak(userId);
-    res.json({ streak });
+    const user = await User.findById(userId).select("streak lastEntryDate");
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({
+      streak: user.streak,
+      lastEntryDate: user.lastEntryDate,
+    });
   } catch (error) {
     console.error("❌ Error fetching streak:", error);
     res.status(500).json({ error: "Failed to fetch streak" });
