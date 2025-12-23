@@ -163,10 +163,6 @@ export const deleteEntry = async (req, res) => {
   }
 };
 
-
-
-
-
 /* -------------------------
    GET STREAK (SOURCE OF TRUTH)
 --------------------------*/
