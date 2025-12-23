@@ -3,7 +3,7 @@ import User from "../models/User.js";
 import cloudinary from "../utils/cloudinary.js";
 import multer from "multer";
 import fs from "fs";
-
+import { calculateConsecutiveStreak } from "../utils/streakCalculator.js";
 const upload = multer({ dest: "uploads/" });
 export const uploadMiddleware = upload.single("image");
 
@@ -48,7 +48,9 @@ export const addEntry = async (req, res) => {
       fs.unlinkSync(req.file.path);
     }
 
-    // Create entry
+    /* -------------------------
+       CREATE ENTRY
+    --------------------------*/
     const entry = await Entry.create({
       user: userId,
       text,
@@ -57,30 +59,25 @@ export const addEntry = async (req, res) => {
       date: entryDate,
     });
 
-    // 🔥 STREAK LOGIC (SOURCE OF TRUTH)
+    /* -------------------------
+       STREAK = SOURCE OF TRUTH
+    --------------------------*/
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    if (!user.lastEntryDate) {
-      // First entry ever
-      user.streak = 1;
-    } else {
-      const diff = daysBetween(user.lastEntryDate, entryDate);
+    // derive streak from DB (not from assumptions)
+    const streak = await calculateConsecutiveStreak(userId);
 
-      if (diff === 0) {
-        // same day → do nothing
-      } else if (diff === 1) {
-        // consecutive day
-        user.streak += 1;
-      } else {
-        // missed one or more days
-        user.streak = 1;
-      }
-    }
+    // derive lastEntryDate from latest entry
+    const latestEntry = await Entry.findOne({ user: userId })
+      .sort({ date: -1 })
+      .select("date");
 
-    user.lastEntryDate = entryDate;
+    user.streak = streak;
+    user.lastEntryDate = streak > 0 ? entryDate : null;
+
     await user.save();
 
     res.json({
@@ -93,6 +90,7 @@ export const addEntry = async (req, res) => {
     res.status(500).json({ error: "Failed to save entry" });
   }
 };
+
 
 /* -------------------------
    GET ENTRIES
@@ -114,6 +112,9 @@ export const getEntries = async (req, res) => {
 /* -------------------------
    DELETE ENTRY
 --------------------------*/
+/* -------------------------
+   DELETE ENTRY (STREAK SAFE)
+--------------------------*/
 export const deleteEntry = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -124,15 +125,38 @@ export const deleteEntry = async (req, res) => {
       return res.status(404).json({ error: "Entry not found" });
     }
 
+    // Remove image if exists
     if (entry.imagePublicId) {
       try {
         await cloudinary.uploader.destroy(entry.imagePublicId);
       } catch {}
     }
 
+    // Delete entry
     await Entry.deleteOne({ _id: entry._id });
 
-    res.json({ message: "Entry deleted", id });
+    //  Recalculate streak (SOURCE OF TRUTH)
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const newStreak = await calculateConsecutiveStreak(userId);
+
+    user.streak = newStreak;
+    user.lastEntryDate =
+      newStreak > 0
+        ? new Date().toISOString().slice(0, 10)
+        : null;
+
+    await user.save();
+
+    res.json({
+      message: "Entry deleted",
+      id,
+      streak: user.streak,
+      lastEntryDate: user.lastEntryDate,
+    });
   } catch (error) {
     console.error("❌ Error deleting entry:", error);
     res.status(500).json({ error: "Failed to delete entry" });
