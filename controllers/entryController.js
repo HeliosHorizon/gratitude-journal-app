@@ -67,10 +67,10 @@ export const addEntry = async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // 🔥 derive streak from DB (not from assumptions)
+    // derive streak from DB (not from assumptions)
     const streak = await calculateConsecutiveStreak(userId);
 
-    // 🔥 derive lastEntryDate from latest entry
+    // derive lastEntryDate from latest entry
     const latestEntry = await Entry.findOne({ user: userId })
       .sort({ date: -1 })
       .select("date");
@@ -135,7 +135,7 @@ export const deleteEntry = async (req, res) => {
     // Delete entry
     await Entry.deleteOne({ _id: entry._id });
 
-    // 🔥 Recalculate streak (SOURCE OF TRUTH)
+    //  Recalculate streak (SOURCE OF TRUTH)
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -162,6 +162,9 @@ export const deleteEntry = async (req, res) => {
     res.status(500).json({ error: "Failed to delete entry" });
   }
 };
+
+
+
 
 
 /* -------------------------
