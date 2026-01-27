@@ -1,4 +1,7 @@
 import User from "../models/User.js";
+import Entry from "../models/Entry.js";
+import Summary from "../models/Summary.js";
+import cloudinary from "../utils/cloudinary.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import admin from "../utils/firebaseAdmin.js";
