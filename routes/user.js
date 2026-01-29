@@ -6,7 +6,7 @@ import {
   saveFcmToken,
   sendNotificationToAll,
   deleteAccount,
-} from "../controllers/userContollers.js"; // ✅ EXACT NAME
+} from "../controllers/userContollers.js"; 
 
 import { authMiddleware } from "../utils/authMiddleware.js";
 

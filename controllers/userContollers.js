@@ -198,36 +198,6 @@ export const sendNotificationToAll = async (title, body) => {
     console.error("Notification error:", err);
   }
 };
-// /* ---------------------------------------
-//    DELETE ACCOUNT (JWT protected)
-// ------------------------------------------*/
-// import Entry from "../models/Entry.js";
-// import Summary from "../models/Summary.js";
-
-// export const deleteAccount = async (req, res) => {
-//   try {
-//     const { userId } = req.user;
-
-//     // safety check
-//     if (!userId) {
-//       return res.status(401).json({ error: "Unauthorized" });
-//     }
-
-//     // 1️⃣ delete all entries
-//     await Entry.deleteMany({ user: userId });
-
-//     // 2️⃣ delete all summaries
-//     await Summary.deleteMany({ user: userId });
-
-//     // 3️⃣ delete user
-//     await User.findByIdAndDelete(userId);
-
-//     return res.json({ success: true });
-//   } catch (err) {
-//     console.error("Delete account error:", err);
-//     return res.status(500).json({ error: "Failed to delete account" });
-//   }
-// };
 /* ---------------------------------------
    DELETE ACCOUNT (JWT protected)
 ------------------------------------------*/
