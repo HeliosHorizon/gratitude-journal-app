@@ -1,4 +1,7 @@
 import User from "../models/User.js";
+import Entry from "../models/Entry.js";
+import Summary from "../models/Summary.js";
+import cloudinary from "../utils/cloudinary.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import admin from "../utils/firebaseAdmin.js";
@@ -8,12 +11,28 @@ const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 /* ---------------------------------------
    REGISTER USER
 ------------------------------------------*/
+const usernameRegex = /^[A-Za-z][A-Za-z0-9]{2,14}$/;
+
 export const registerUser = async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    if (!username || !password)
+    if (!username || !password) {
       return res.status(400).json({ error: "Username & password required" });
+    }
+
+    if (!usernameRegex.test(username)) {
+      return res.status(400).json({
+        error:
+          "Username must start with a letter and be 3–15 characters long",
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        error: "Password must be at least 6 characters",
+      });
+    }
 
     const existing = await User.findOne({ username });
     if (existing)
@@ -45,6 +64,7 @@ export const registerUser = async (req, res) => {
     res.status(500).json({ error: "Registration failed" });
   }
 };
+
 
 /* ---------------------------------------
    LOGIN USER
@@ -178,3 +198,79 @@ export const sendNotificationToAll = async (title, body) => {
     console.error("Notification error:", err);
   }
 };
+// /* ---------------------------------------
+//    DELETE ACCOUNT (JWT protected)
+// ------------------------------------------*/
+// import Entry from "../models/Entry.js";
+// import Summary from "../models/Summary.js";
+
+// export const deleteAccount = async (req, res) => {
+//   try {
+//     const { userId } = req.user;
+
+//     // safety check
+//     if (!userId) {
+//       return res.status(401).json({ error: "Unauthorized" });
+//     }
+
+//     // 1️⃣ delete all entries
+//     await Entry.deleteMany({ user: userId });
+
+//     // 2️⃣ delete all summaries
+//     await Summary.deleteMany({ user: userId });
+
+//     // 3️⃣ delete user
+//     await User.findByIdAndDelete(userId);
+
+//     return res.json({ success: true });
+//   } catch (err) {
+//     console.error("Delete account error:", err);
+//     return res.status(500).json({ error: "Failed to delete account" });
+//   }
+// };
+/* ---------------------------------------
+   DELETE ACCOUNT (JWT protected)
+------------------------------------------*/
+
+
+export const deleteAccount = async (req, res) => {
+  try {
+    const { userId } = req.user;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    /* ------------------------------------------------
+       1️⃣ Fetch entries to clean Cloudinary images
+    ------------------------------------------------ */
+    const entries = await Entry.find({ user: userId }).select("imagePublicId");
+
+    for (const entry of entries) {
+      if (entry.imagePublicId) {
+        try {
+          await cloudinary.uploader.destroy(entry.imagePublicId);
+        } catch (err) {
+          // do NOT fail deletion if Cloudinary fails
+          console.warn(
+            "⚠️ Failed to delete Cloudinary image:",
+            entry.imagePublicId
+          );
+        }
+      }
+    }
+
+    /* ------------------------------------------------
+       2️⃣ Delete DB data
+    ------------------------------------------------ */
+    await Entry.deleteMany({ user: userId });
+    await Summary.deleteMany({ user: userId });
+    await User.findByIdAndDelete(userId);
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("❌ Delete account error:", err);
+    return res.status(500).json({ error: "Failed to delete account" });
+  }
+};
+

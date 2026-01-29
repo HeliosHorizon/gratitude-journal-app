@@ -5,6 +5,7 @@ import {
   updateStreak,
   saveFcmToken,
   sendNotificationToAll,
+  deleteAccount,
 } from "../controllers/userContollers.js"; // ✅ EXACT NAME
 
 import { authMiddleware } from "../utils/authMiddleware.js";
@@ -18,6 +19,9 @@ router.post("/login", loginUser);
 // protected
 router.post("/streak", authMiddleware, updateStreak);
 router.post("/register-token", authMiddleware, saveFcmToken);
+// delete account
+router.delete("/me", authMiddleware, deleteAccount);
+
 
 // admin/test
 router.post("/notify", async (req, res) => {
