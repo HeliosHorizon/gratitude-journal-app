@@ -13,15 +13,13 @@ export const authMiddleware = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-
     req.user = {
-      userId: decoded.userId,
-      username: decoded.username,
-      email: decoded.email,
+        userId: decoded.userId,
+        username: decoded.username,
     };
 
     next();
-  } catch {
+  } catch (err) {
     return res.status(401).json({ error: "Invalid token" });
   }
 };
