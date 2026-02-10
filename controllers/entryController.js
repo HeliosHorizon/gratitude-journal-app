@@ -41,7 +41,7 @@ export const addEntry = async (req, res) => {
 
     if (req.file) {
       const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: "gratitude_entries",
+        folder: "mythanks_entries",
       });
       imageUrl = result.secure_url;
       imagePublicId = result.public_id;
