@@ -456,18 +456,17 @@ export const deleteAccount = async (req, res) => {
 ===================================================== */
 export const forgotPasswordSendOtp = async (req, res) => {
   try {
-    const { identifier } = req.body; // Can be username or email
+    const { identifier } = req.body;
 
     if (!identifier)
       return res.status(400).json({ error: "Username or email required" });
 
-    // Find user by username OR email
     const user = await User.findOne({
       $or: [{ username: identifier }, { email: identifier }]
     });
 
     if (!user) 
-      return res.json({ message: "If account exists, OTP sent" }); // Security: don't reveal if user exists
+      return res.status(404).json({ error: "User not found" }); 
 
     if (!checkOtpCooldown(user))
       return res.status(429).json({
@@ -481,7 +480,7 @@ export const forgotPasswordSendOtp = async (req, res) => {
     user.otpLastSentAt = Date.now();
 
     await user.save();
-    await sendOtpMail(user.email, otp); // Send to user's email
+    await sendOtpMail(user.email, otp);
 
     res.json({ message: "OTP sent" });
   } catch (err) {
